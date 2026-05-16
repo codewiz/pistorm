@@ -2,6 +2,17 @@
  * Copyright 2020 Claude Schwarz
  * Copyright 2020 Niklas Ekström - rewrite in Verilog
  */
+
+// Extra bus-access hold: HOLD_CLOCKS half-c7m steps added in S6 to every
+// 68k cycle, holding AS / address / data longer before deassert. Meant to
+// help Zorro II cards that mishandle the PiStorm's very short bus cycles
+// (e.g. GVP RAM). Default 0 = stock, so scripts that don't set it (e.g.
+// the Windows make.bat) keep working.
+//   0 = stock   2 = +1 c7m   3 = +1.5 c7m
+`ifndef HOLD_CLOCKS
+`define HOLD_CLOCKS 0
+`endif
+
 module pistorm(
     output reg      PI_TXN_IN_PROGRESS, // GPIO0
     output reg      PI_IPL_ZERO,        // GPIO1
@@ -186,6 +197,11 @@ module pistorm(
 
   reg [2:0] state = 3'd0;
   reg [2:0] PI_TXN_IN_PROGRESS_delay;
+  // Bus-access hold depth, in half-c7m steps. At HOLD_N==0 the S6 compare
+  // folds to a constant and synthesis prunes s6_hold_cnt, so 0 == the
+  // original counter-free logic.
+  localparam HOLD_N = `HOLD_CLOCKS;
+  reg [2:0] s6_hold_cnt = 3'd0;   // half-c7m hold counter - see S6
 
   // -------- Bus arbitration (BR/BG/BGACK) --------
   // Two-flop synchronizers for async inputs from the other master.
@@ -330,10 +346,18 @@ module pistorm(
         end
       end
        
-      3'd6: begin // S6
-        if (c7m_falling) begin
-          M68K_VMA_n <= 1'b1;
-          state <= 3'd7;
+      3'd6: begin // S6 - bus-access hold (HOLD_CLOCKS half-c7m steps).
+        // Stock exits on the first c7m edge; each extra step holds AS /
+        // address / data one more half c7m (~70 ns) before S7 deasserts.
+        // Counting both c7m edges gives the half-c7m resolution.
+        if (c7m_rising || c7m_falling) begin
+          if (HOLD_N == 0 || s6_hold_cnt == HOLD_N) begin
+            s6_hold_cnt <= 3'd0;
+            M68K_VMA_n <= 1'b1;
+            state <= 3'd7;
+          end else begin
+            s6_hold_cnt <= s6_hold_cnt + 3'd1;
+          end
         end
       end
        
