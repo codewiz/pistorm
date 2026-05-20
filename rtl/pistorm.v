@@ -198,12 +198,11 @@ module pistorm(
   wire br_n_s    = br_sync[1];
   wire bgack_n_s = bgack_sync[1];
 
-  // We only release the bus at a clean boundary: parked in the wait-for-op
-  // state with AS deasserted and no queued op. S0 only lasts one PI_CLK and
-  // unconditionally falls into S1, where the FSM idles until op_req goes high
-  // — so S1 (or transiently S0) is the right place to grant. LTCH_*_OE_n are
-  // already raised by S7 before we get here.
-  wire bus_idle = (state == 3'd0 || state == 3'd1) && as_n_r && !op_req;
+  // We only release the bus at a clean boundary: parked in S0 (the
+  // wait-for-op state) with AS deasserted and no queued op. S0 idles
+  // until op_req && c7m_falling, so the arbiter window is well defined.
+  // LTCH_*_OE_n are raised at S0 entry, before we get here.
+  wire bus_idle = (state == 3'd0) && as_n_r && !op_req;
 
   localparam ARB_IDLE     = 2'd0;
   localparam ARB_GRANTING = 2'd1;  // BG asserted, waiting for BGACK
@@ -257,30 +256,31 @@ module pistorm(
       endcase
     end
 
-    // 68k cycle FSM. We only block the S1->S2 advance when we don't own the
-    // bus (gating the whole FSM here added ~1.6 ns to every next-state path).
-    // The arbiter is guaranteed to release only at S0, so the FSM will be
-    // parked at S0 or S1 (the wait-for-op state) when bus_owned drops.
+    // 68k cycle FSM. After AS/DS deassert in S7, address and write data
+    // stay driven for one half-c7m (S7) and are released in S0. S0 is
+    // also where we wait for op_req + arbitration on a clock edge, so
+    // the OE deassertion and the next cycle start are both deterministic.
+    // The arbiter is only allowed to grant in S0 (bus_idle is gated there).
     case (state)
-      3'd0: begin // S0
-        rw_r <= 1'b1; // S7 -> S0
-//        if (c7m_falling) begin
-//          if (op_req) begin
-            state <= 2'd1;
-//          end
-//        end
+      3'd0: begin // S0 - release address and write data here (one
+        // half-c7m of hold after AS), then idle waiting for op_req and
+        // arbitration on the c7m_falling edge so the deassertion is
+        // deterministically clock-aligned.
+        LTCH_D_WR_OE_n <= 1'b1;
+        LTCH_A_OE_n    <= 1'b1;
+        rw_r <= 1'b1;
+        if (op_req && arb_state == ARB_IDLE && c7m_falling) begin
+          state <= 3'd1;
+        end
       end
 
-      3'd1: begin // S1
-        // Only start a new 68k cycle when the arbiter is idle. This is
-        // strictly tighter than gating on bus_owned alone: it also blocks
-        // new cycles while BG is asserted and we're waiting for BGACK
-        // (the ARB_GRANTING window), which a real 68k won't do either.
-        // ARB_IDLE implies bus_owned == 1, so the bus_owned term is folded in.
-        if (op_req && arb_state == ARB_IDLE) begin
-          if(c7m_rising) begin
-            state <= 3'd2;
-          end
+      3'd1: begin // S1 - transitional. op_req + arbitration were
+        // checked in S0, so we are committed to the next cycle here.
+        // op_req stays high through S1 (cleared in S3), which keeps
+        // bus_idle false and blocks the arbiter from granting between
+        // S1 and S2.
+        if (c7m_rising) begin
+          state <= 3'd2;
         end
       end
       3'd2: begin // S2
@@ -337,16 +337,15 @@ module pistorm(
         end
       end
        
-      3'd7: begin // S7
-        LTCH_D_WR_OE_n <= 1'b1;
-        LTCH_A_OE_n <= 1'b1;
-        as_n_r <= 1'b1;
+      3'd7: begin // S7 - AS/DS deassert on the stock schedule; address
+        // and write data stay driven into S0 (the 68000 holds them
+        // through the AS-trailing edge so external chips can latch).
+        as_n_r  <= 1'b1;
         uds_n_r <= 1'b1;
         lds_n_r <= 1'b1;
-//        if(c7m_rising) begin
-//          rw_r <= 1'b1; // S7 -> S0
+        if (c7m_rising) begin
           state <= 3'd0;
-//        end
+        end
       end
     endcase
   end
