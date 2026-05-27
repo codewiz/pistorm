@@ -87,10 +87,10 @@ module pistorm (
         PI_TXN_IN_PROGRESS <= 1'b0;
         PI_IPL_ZERO        <= 1'b0;
         PI_RESET           <= 1'b0;
-        
+
         fc_r               <= 3'd0;
         rw_r               <= 1'b1;
-        
+
         M68K_E             <= 1'b0;
         M68K_VMA_n         <= 1'b1;
         M68K_BG_n          <= 1'b1;
@@ -114,7 +114,7 @@ module pistorm (
     // Status & Reset
     // =========================================================================
     reg [15:0] data_out;
-    reg [2:0]  ipl; 
+    reg [2:0]  ipl;
 
     assign PI_D = (PI_A == REG_STATUS && PI_RD) ? data_out : 16'bz;
 
@@ -146,13 +146,13 @@ module pistorm (
     always @(*) begin
         LTCH_D_WR_U    <= (PI_A == REG_DATA)    && PI_WR;
         LTCH_D_WR_L    <= (PI_A == REG_DATA)    && PI_WR;
-        
+
         LTCH_A_0       <= (PI_A == REG_ADDR_LO) && PI_WR;
         LTCH_A_8       <= (PI_A == REG_ADDR_LO) && PI_WR;
-        
+
         LTCH_A_16      <= (PI_A == REG_ADDR_HI) && PI_WR;
         LTCH_A_24      <= (PI_A == REG_ADDR_HI) && PI_WR;
-        
+
         LTCH_D_RD_OE_n <= !(PI_A == REG_DATA && PI_RD);
     end
 
@@ -189,13 +189,13 @@ module pistorm (
 
     always @(posedge c200m) begin
         if (c7m_falling) begin
-            // e_counter Logik
+            // e_counter logic
             if (e_counter == 4'd9)
                 e_counter <= 4'd0;
             else
                 e_counter <= e_counter + 4'd1;
-                
-            // M68K_E Logik
+
+            // M68K_E logic
             if (e_counter == 4'd9)
                 M68K_E <= 1'b0;
             else if (e_counter == 4'd5)
@@ -212,12 +212,12 @@ module pistorm (
     // Two-flop synchronizers for async inputs from the other master.
     reg [1:0] br_sync    = 2'b11;
     reg [1:0] bgack_sync = 2'b11;
-    
+
     always @(posedge c200m) begin
         br_sync    <= {br_sync[0],    M68K_BR_n};
         bgack_sync <= {bgack_sync[0], M68K_BGACK_n};
     end
-    
+
     wire br_n_s    = br_sync[1];
     wire bgack_n_s = bgack_sync[1];
 
@@ -261,7 +261,7 @@ module pistorm (
     // 68K Cycle State Machine
     // =========================================================================
     always @(posedge c200m) begin
-        // Always accept Pi register writes — the Pi can queue an op while
+        // Always accept Pi register writes - the Pi can queue an op while
         // we're released; it will execute once the bus comes back.
         if (wr_rising) begin
             case (PI_A)
@@ -287,30 +287,30 @@ module pistorm (
         // the OE deassertion and the next cycle start are both deterministic.
         // The arbiter is only allowed to grant in S0 (bus_idle is gated there).
         case (state)
-            3'd0: begin 
-                // S0 - release address and write data here (one half-c7m of 
-                // hold after AS), then idle waiting for op_req and arbitration 
-                // on the c7m_falling edge so the deassertion is deterministically 
+            3'd0: begin
+                // S0 - release address and write data here (one half-c7m of
+                // hold after AS), then idle waiting for op_req and arbitration
+                // on the c7m_falling edge so the deassertion is deterministically
                 // clock-aligned.
                 LTCH_D_WR_OE_n <= 1'b1;
                 LTCH_A_OE_n    <= 1'b1;
                 rw_r           <= 1'b1;
-                
+
                 if (op_req && arb_state == ARB_IDLE && c7m_falling) begin
                     state <= 3'd1;
                 end
             end
 
-            3'd1: begin 
-                // S1 - transitional. op_req + arbitration were checked in S0, 
-                // so we are committed to the next cycle here. op_req stays high 
-                // through S1 (cleared in S3), which keeps bus_idle false and 
+            3'd1: begin
+                // S1 - transitional. op_req + arbitration were checked in S0,
+                // so we are committed to the next cycle here. op_req stays high
+                // through S1 (cleared in S3), which keeps bus_idle false and
                 // blocks the arbiter from granting between S1 and S2.
                 if (c7m_rising) begin
                     state <= 3'd2;
                 end
             end
-            
+
             3'd2: begin // S2
                 rw_r           <= op_rw; // S1 -> S2
                 LTCH_D_WR_OE_n <= op_rw;
@@ -318,7 +318,7 @@ module pistorm (
                 as_n_r         <= 1'b0;
                 uds_n_r        <= op_rw ? op_uds_n : 1'b1;
                 lds_n_r        <= op_rw ? op_lds_n : 1'b1;
-                
+
                 if (c7m_falling) begin
                     uds_n_r <= op_uds_n;
                     lds_n_r <= op_lds_n;
@@ -339,13 +339,13 @@ module pistorm (
                     end
                 end
             end
-            
+
             3'd4: begin // S4
                 PI_TXN_IN_PROGRESS_delay <= {PI_TXN_IN_PROGRESS_delay[1:0], 1'b0};
                 PI_TXN_IN_PROGRESS       <= PI_TXN_IN_PROGRESS_delay[2];
                 LTCH_D_RD_U              <= 1'b1;
                 LTCH_D_RD_L              <= 1'b1;
-                
+
                 if (c7m_falling) begin
                     state              <= 3'd5;
                     PI_TXN_IN_PROGRESS <= 1'b0;
@@ -355,27 +355,27 @@ module pistorm (
             3'd5: begin // S5
                 LTCH_D_RD_U <= 1'b0;
                 LTCH_D_RD_L <= 1'b0;
-                
+
                 if (c7m_rising) begin
                     state <= 3'd6;
                 end
             end
-            
+
             3'd6: begin // S6
                 if (c7m_falling) begin
                     M68K_VMA_n <= 1'b1;
                     state      <= 3'd7;
                 end
             end
-            
-            3'd7: begin 
-                // S7 - AS/DS deassert on the stock schedule; address and write 
-                // data stay driven into S0 (the 68000 holds them through the 
+
+            3'd7: begin
+                // S7 - AS/DS deassert on the stock schedule; address and write
+                // data stay driven into S0 (the 68000 holds them through the
                 // AS-trailing edge so external chips can latch).
                 as_n_r  <= 1'b1;
                 uds_n_r <= 1'b1;
                 lds_n_r <= 1'b1;
-                
+
                 if (c7m_rising) begin
                     state <= 3'd0;
                 end
