@@ -189,13 +189,11 @@ module pistorm (
 
     always @(posedge c200m) begin
         if (c7m_falling) begin
-            // e_counter logic
             if (e_counter == 4'd9)
                 e_counter <= 4'd0;
             else
                 e_counter <= e_counter + 4'd1;
 
-            // M68K_E logic
             if (e_counter == 4'd9)
                 M68K_E <= 1'b0;
             else if (e_counter == 4'd5)
@@ -221,11 +219,10 @@ module pistorm (
     wire br_n_s    = br_sync[1];
     wire bgack_n_s = bgack_sync[1];
 
-    // We only release the bus at a clean boundary: parked in S0 (the
-    // wait-for-op state) with AS deasserted and no queued op. S0 idles
-    // until op_req && c7m_falling, so the arbiter window is well defined.
-    // LTCH_*_OE_n are raised at S0 entry, before we get here.
-    wire bus_idle = (state == 3'd0) && as_n_r && !op_req;
+    // Grant only at a clean boundary: parked in S0, AS deasserted, no op
+    // queued, and the address latches already released (LTCH_A_OE_n
+    // high, which S0 only does when no op is pending).
+    wire bus_idle = (state == 3'd0) && as_n_r && !op_req && LTCH_A_OE_n;
 
     localparam ARB_IDLE     = 2'd0;
     localparam ARB_GRANTING = 2'd1;  // BG asserted, waiting for BGACK
@@ -281,31 +278,39 @@ module pistorm (
             endcase
         end
 
-        // 68k cycle FSM. After AS/DS deassert in S7, address and write data
-        // stay driven for one half-c7m (S7) and are released in S0. S0 is
-        // also where we wait for op_req + arbitration on a clock edge, so
-        // the OE deassertion and the next cycle start are both deterministic.
-        // The arbiter is only allowed to grant in S0 (bus_idle is gated there).
+        // 68k cycle FSM. Each state is half a c7m, like the 68000's
+        // S-states, except S0 (stretches while idle) and S3 (stretches
+        // for DTACK wait states). The bus timing deliberately mirrors a
+        // real 68000: address valid from S1, AS in S2, and address/data
+        // held after AS through S7 into S0 (~140 ns), which Amigas with
+        // Buster (e.g. A2000) need to latch the address cleanly.
         case (state)
             3'd0: begin
-                // S0 - release address and write data here (one half-c7m of
-                // hold after AS), then idle waiting for op_req and arbitration
-                // on the c7m_falling edge so the deassertion is deterministically
-                // clock-aligned.
-                LTCH_D_WR_OE_n <= 1'b1;
-                LTCH_A_OE_n    <= 1'b1;
-                rw_r           <= 1'b1;
-
-                if (op_req && arb_state == ARB_IDLE && c7m_falling) begin
-                    state <= 3'd1;
+                // S0 - idle / next-cycle launch, decided on c7m_falling.
+                // Op queued and bus ours: switch the latches straight to
+                // the next op (the Pi loaded them before setting op_req)
+                // without ever floating the bus. Otherwise release the
+                // bus; LTCH_A_OE_n going high opens the arbiter's grant
+                // window (bus_idle gates on it).
+                if (c7m_falling) begin
+                    if (op_req && arb_state == ARB_IDLE) begin
+                        rw_r           <= op_rw;
+                        LTCH_D_WR_OE_n <= op_rw;
+                        LTCH_A_OE_n    <= 1'b0;
+                        state          <= 3'd1;
+                    end else begin
+                        rw_r           <= 1'b1;
+                        LTCH_D_WR_OE_n <= 1'b1;
+                        LTCH_A_OE_n    <= 1'b1;
+                    end
                 end
             end
 
             3'd1: begin
-                // S1 - transitional. op_req + arbitration were checked in S0,
-                // so we are committed to the next cycle here. op_req stays high
-                // through S1 (cleared in S3), which keeps bus_idle false and
-                // blocks the arbiter from granting between S1 and S2.
+                // S1 - address setup window: address and RW soak for
+                // half a c7m before AS asserts in S2, like a real 68000.
+                // op_req stays high (cleared in S3), keeping bus_idle
+                // false so the arbiter cannot grant mid-launch.
                 if (c7m_rising) begin
                     state <= 3'd2;
                 end
