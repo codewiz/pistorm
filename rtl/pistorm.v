@@ -356,16 +356,26 @@ module pistorm (
                 end
             end
 
-            3'd5: begin // S5
-                LTCH_D_RD_U <= 1'b0;
-                LTCH_D_RD_L <= 1'b0;
-
+            3'd5: begin // S5 - read latches stay transparent
                 if (c7m_rising) begin
                     state <= 3'd6;
                 end
             end
 
             3'd6: begin // S6
+                // Capture read data at S6 entry - half a c7m later than
+                // before (S5 entry), giving slaves whose data trails
+                // DTACK (Buster-buffered slots) an extra 70 ns to
+                // deliver. Do NOT move this later: closing at the
+                // S6->S7 edge corrupted chipmem reads (the synchronizer
+                // + output delay land the physical close after the real
+                // edge, where Agnus has moved the chip bus to the next
+                // DMA slot), and closing just before the edge via c200m
+                // tick counting was tried and did not help the GVP
+                // either.
+                LTCH_D_RD_U <= 1'b0;
+                LTCH_D_RD_L <= 1'b0;
+
                 if (c7m_falling) begin
                     M68K_VMA_n <= 1'b1;
                     state      <= 3'd7;
