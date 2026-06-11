@@ -205,7 +205,6 @@ module pistorm (
     // Bus Arbitration (BR/BG/BGACK)
     // =========================================================================
     reg [2:0] state = 3'd0;
-    reg [2:0] PI_TXN_IN_PROGRESS_delay;
 
     // Two-flop synchronizers for async inputs from the other master.
     reg [1:0] br_sync    = 2'b11;
@@ -336,7 +335,6 @@ module pistorm (
                 if (c7m_rising) begin
                     if (!M68K_DTACK_n || (!M68K_VMA_n && e_counter == 4'd8)) begin
                         state <= 3'd4;
-                        PI_TXN_IN_PROGRESS_delay[2:0] <= 3'b111;
                     end else begin
                         if (!M68K_VPA_n && e_counter == 4'd2) begin
                             M68K_VMA_n <= 1'b0;
@@ -346,14 +344,15 @@ module pistorm (
             end
 
             3'd4: begin // S4
-                PI_TXN_IN_PROGRESS_delay <= {PI_TXN_IN_PROGRESS_delay[1:0], 1'b0};
-                PI_TXN_IN_PROGRESS       <= PI_TXN_IN_PROGRESS_delay[2];
-                LTCH_D_RD_U              <= 1'b1;
-                LTCH_D_RD_L              <= 1'b1;
+                // Note: PI_TXN_IN_PROGRESS intentionally stays asserted
+                // until S7->S0. Dropping it here (as before) lets the Pi
+                // rewrite the address/write-data latches during S5-S7,
+                // changing the bus mid-cycle while AS/DS are asserted.
+                LTCH_D_RD_U <= 1'b1;
+                LTCH_D_RD_L <= 1'b1;
 
                 if (c7m_falling) begin
-                    state              <= 3'd5;
-                    PI_TXN_IN_PROGRESS <= 1'b0;
+                    state <= 3'd5;
                 end
             end
 
@@ -374,15 +373,20 @@ module pistorm (
             end
 
             3'd7: begin
-                // S7 - AS/DS deassert on the stock schedule; address and write
-                // data stay driven into S0 (the 68000 holds them through the
-                // AS-trailing edge so external chips can latch).
+                // S7 - AS/DS deassert; address and write data stay
+                // driven into S0 (a real 68000 holds them past the AS
+                // trailing edge so external logic can latch).
                 as_n_r  <= 1'b1;
                 uds_n_r <= 1'b1;
                 lds_n_r <= 1'b1;
 
                 if (c7m_rising) begin
                     state <= 3'd0;
+                    // Cycle complete: only now may the Pi reload the
+                    // latches. The Pi's poll + GPIO latency lands the
+                    // earliest rewrite safely inside S0/S1, between the
+                    // old address's hold and the new address's setup.
+                    PI_TXN_IN_PROGRESS <= 1'b0;
                 end
             end
         endcase
