@@ -220,7 +220,10 @@ module pistorm (
 
     // Grant only at a clean boundary: parked in S0, AS deasserted, no op
     // queued, and the address latches already released (LTCH_A_OE_n
-    // high, which S0 only does when no op is pending).
+    // high, which S0 only does when no op is pending). The !op_req term is
+    // load-bearing: it is the mutual-exclusion guard between granting the
+    // bus and the S0 FSM launching a new cycle (both fire on the same
+    // c200m edge looking at the same S0-idle condition).
     wire bus_idle = (state == 3'd0) && as_n_r && !op_req && LTCH_A_OE_n;
 
     localparam ARB_IDLE     = 2'd0;
@@ -231,8 +234,18 @@ module pistorm (
     always @(posedge c200m) begin
         case (arb_state)
             ARB_IDLE: begin
-                if (!br_n_s && bus_idle) begin
-                    M68K_BG_n <= 1'b0;       // grant
+                // CDTV FIX: assert BG only on the bus clock's falling edge,
+                // like a real 68000 (which outputs /BG synchronized to CLK,
+                // not at an arbitrary phase). A590/GVP DMA masters sit behind
+                // sidecar/Zorro buffering that tolerates an async grant; the
+                // CDTV DMAC is on the motherboard at the CPU socket and needs
+                // a clock-aligned /BG. On real CDTV this is the difference
+                // between not booting at all (async grant) and booting with a
+                // working graphical player + audio CD playback. NOTE: sustained
+                // game data loads still reset under load (same "fails under
+                // load" class as GVP -m zorro) - not yet solved.
+                if (!br_n_s && bus_idle && c7m_falling) begin
+                    M68K_BG_n <= 1'b0;       // grant (clock-aligned)
                     arb_state <= ARB_GRANTING;
                 end
             end
